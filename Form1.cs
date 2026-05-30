@@ -7,6 +7,8 @@ using OxyPlot;
 using OxyPlot.Series;
 using OxyPlot.WindowsForms;
 using OxyPlot.Axes;
+using System.Security.Cryptography;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement;
 
 namespace Project
 {
@@ -21,6 +23,11 @@ namespace Project
         private int seekSample = 0;
         private int totalSamples = 0;
         private float[] cachedSamples;
+        private float[] fullSamples;
+        private CancellationTokenSource compressionCts;
+        private System.Diagnostics.Stopwatch compressionStopwatch = new System.Diagnostics.Stopwatch();
+        private int audioChannels = 1;
+        private int waveformDisplayLength = 0;
 
         public Form1()
         {
@@ -28,8 +35,6 @@ namespace Project
             SetupWaveformPanel();
             SetupPlaybackTimer();
         }
-
-
 
         private void SetupWaveformPanel()
         {
@@ -49,18 +54,6 @@ namespace Project
                 Background = OxyColors.Black,
                 PlotAreaBorderColor = OxyColors.Transparent
             };
-
-            // رسالة ترحيبية
-            waveformPlot.Annotations.Add(
-                new OxyPlot.Annotations.TextAnnotation
-                {
-                    Text = "📂 اسحب ملفاً صوتياً هنا أو اضغط Browse",
-                    TextPosition = new DataPoint(0.5, 0.5),
-                    TextColor = OxyColors.Gray,
-                    FontSize = 12,
-                    TextHorizontalAlignment = OxyPlot.HorizontalAlignment.Center
-                });
-
             plotWaveform.Model = waveformPlot;
         }
 
@@ -70,7 +63,6 @@ namespace Project
             playbackTimer.Interval = 100;
             playbackTimer.Tick += PlaybackTimer_Tick;
         }
-
 
         private void PnlWaveform_DragEnter(object sender, DragEventArgs e)
         {
@@ -97,10 +89,10 @@ namespace Project
 
         private void btnBrowse_Click(object sender, EventArgs e)
         {
-            using(OpenFileDialog ofd = new OpenFileDialog())
+            using (OpenFileDialog ofd = new OpenFileDialog())
             {
                 ofd.Title = "أختر الملف الصوتي";
-                ofd.Filter = "Audio Files|*.wav;*.mp3;*.acc";
+                ofd.Filter = "Audio Files|*.wav;*.mp3;*.aac";
                 if (ofd.ShowDialog() == DialogResult.OK)
                 {
                     LoadAudioFile(ofd.FileName);
@@ -110,22 +102,6 @@ namespace Project
 
         private void LoadAudioFile(string filePath)
         {
-            if (!File.Exists(filePath))
-            {
-                MessageBox.Show("الملف غير موجود!", "خطأ",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return;
-            }
-
-            string ext = Path.GetExtension(filePath).ToLower();
-            string[] allowed = { ".wav", ".mp3", ".flac", ".aiff" };
-            if (Array.IndexOf(allowed, ext) < 0)
-            {
-                MessageBox.Show("صيغة الملف غير مدعومة!\nالصيغ المدعومة: WAV, MP3, FLAC, AIFF",
-                    "خطأ", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
             StopPlayback();
 
             currentFilePath = filePath;
@@ -139,42 +115,72 @@ namespace Project
             btnStop.Enabled = false;
 
             plotWaveform.Invalidate();
+
+            audioFileDetails();
         }
+
+        private void audioFileDetails()
+        {
+
+            TimeSpan duration   = audioReader.TotalTime;
+            int channels = audioReader.WaveFormat.Channels;
+            int sampleRate = audioReader.WaveFormat.SampleRate;
+            int bitRate = audioReader.WaveFormat.AverageBytesPerSecond * 8;
+            string encoding = audioReader.WaveFormat.Encoding.ToString();
+            FileInfo fi = new FileInfo(currentFilePath);
+            double fileSize = fi.Length / (1024 * 1024);
+
+
+            audioDetailsLbl.Text =
+                $"duration  : {duration  :mm\\:ss}\n" +
+                $"Channels: {channels}\n" +
+                $"Sample Rate: {sampleRate} Hz\n" +
+                $"Bit Rate: {bitRate / 1000} kbps\n" +
+                $"Encoding: {encoding}\n" +
+                $"File Size: {fileSize:F2} MB";
+
+            nudSampleRate.Value = sampleRate;
+            nudQuantLevels.Value = bitRate;
+        }
+
         private void LoadWaveformSamples(string filePath)
         {
-            float[] allSamples;
+            audioReader = new AudioFileReader(filePath);
+            audioChannels = audioReader.WaveFormat.Channels;
 
-            using (var reader = new AudioFileReader(filePath))
+            int bytesPerFrame = (audioReader.WaveFormat.BitsPerSample / 8) * audioReader.WaveFormat.Channels;
+            totalSamples = (int)(audioReader.Length / bytesPerFrame);
+
+            var fullList = new List<float>();
+            float[] tmpBuf = new float[4092];
+            int read;
+
+            // Full Samples for Compression (not downsampled)
+            while ((read = audioReader.Read(tmpBuf, 0, tmpBuf.Length)) > 0)
+                for (int i = 0; i < read; i++)
+                    fullList.Add(tmpBuf[i]);
+            
+            fullSamples = fullList.ToArray();
+
+
+            // Drawing Samples (Downsampled for Display)
+            int displaySamples = plotWaveform.Width > 0 ? plotWaveform.Width : 800;
+            int chunkSize = Math.Max(1, totalSamples / audioChannels / displaySamples);
+            var displayList = new List<float>();
+
+            for (int i = 0; i < fullSamples.Length; i += chunkSize)
             {
-                int channels = reader.WaveFormat.Channels;
-                int bitsPerSample = reader.WaveFormat.BitsPerSample;
-                totalSamples = (int)(reader.Length / (bitsPerSample / 8));
-
-                // نأخذ عدد عينات مناسب للعرض
-                int displaySamples = plotWaveform.Width > 0 ? plotWaveform.Width : 800;
-                int chunkSize = Math.Max(1, totalSamples / channels / displaySamples);
-
-                var samplesList = new System.Collections.Generic.List<float>();
-                float[] buffer = new float[chunkSize * channels];
-                int read;
-
-                while ((read = reader.Read(buffer, 0, buffer.Length)) > 0)
-                {
-                    float max = 0;
-                    for (int i = 0; i < read; i++)
-                        if (Math.Abs(buffer[i]) > max)
-                            max = Math.Abs(buffer[i]);
-                    samplesList.Add(max);
-                }
-
-                allSamples = samplesList.ToArray();
-
-                cachedSamples = allSamples;
-                DrawWaveform(allSamples, 0);
+                float max = 0;
+                int end = Math.Min(i + chunkSize, fullSamples.Length);
+                for (int j = i; j < end; j++)
+                    if (Math.Abs(fullSamples[j]) > max)
+                        max = Math.Abs(fullSamples[j]);
+                displayList.Add(max);
             }
 
-            // ارسم الـ Waveform
-            DrawWaveform(allSamples, 0);
+            cachedSamples = displayList.ToArray();
+            waveformDisplayLength = cachedSamples.Length;
+            DrawWaveform(cachedSamples, 0);
         }
 
         private void DrawWaveform(float[] samples, int playedIndex)
@@ -188,7 +194,6 @@ namespace Project
                 Padding = new OxyThickness(0)
             };
 
-            // إخفاء المحاور
             waveformPlot.Axes.Add(new LinearAxis
             {
                 Position = AxisPosition.Bottom,
@@ -199,7 +204,7 @@ namespace Project
             waveformPlot.Axes.Add(new LinearAxis
             {
                 Position = AxisPosition.Left,
-                IsAxisVisible = false,
+                IsAxisVisible = true,
                 Minimum = -1,
                 Maximum = 1,
                 MinimumPadding = 0,
@@ -208,11 +213,11 @@ namespace Project
 
             int n = samples.Length;
 
-            // السلسلة الأولى: الجزء المشغَّل (أزرق)
+            // Played Part (Blue)
             var playedSeriesTop = new LineSeries { Color = OxyColors.DeepSkyBlue, StrokeThickness = 1 };
             var playedSeriesBottom = new LineSeries { Color = OxyColors.DeepSkyBlue, StrokeThickness = 1 };
 
-            // السلسلة الثانية: الجزء الباقي (أخضر)
+            // Remain Part (Green)
             var remainSeriesTop = new LineSeries { Color = OxyColors.LimeGreen, StrokeThickness = 1 };
             var remainSeriesBottom = new LineSeries { Color = OxyColors.LimeGreen, StrokeThickness = 1 };
 
@@ -237,7 +242,7 @@ namespace Project
             waveformPlot.Series.Add(remainSeriesTop);
             waveformPlot.Series.Add(remainSeriesBottom);
 
-            // خط أبيض لموضع التشغيل
+            // White Line for Current Position
             if (playedIndex > 0)
             {
                 waveformPlot.Annotations.Add(new OxyPlot.Annotations.LineAnnotation
@@ -270,7 +275,6 @@ namespace Project
 
             StartPlayback(seekSample);
         }
-
 
         private void btnPause_Click(object sender, EventArgs e)
         {
@@ -352,6 +356,9 @@ namespace Project
 
         private void WaveOut_PlaybackStopped(object sender, StoppedEventArgs e)
         {
+            if (IsDisposed || !IsHandleCreated)
+                return;
+
             this.Invoke((Action)(() =>
             {
                 seekSample = 0;
@@ -368,21 +375,16 @@ namespace Project
         {
             if (audioReader == null || waveOut == null) return;
 
-            int bytesPerSample = audioReader.WaveFormat.BitsPerSample / 8;
-            seekSample = bytesPerSample > 0
-                ? (int)(audioReader.Position / bytesPerSample)
-                : 0;
+            int bytesPerFrame = (audioReader.WaveFormat.BitsPerSample / 8) * audioReader.WaveFormat.Channels;
+            seekSample = bytesPerFrame > 0 ? (int)(audioReader.Position / bytesPerFrame) : 0;
 
             TimeSpan current = audioReader.CurrentTime;
             TimeSpan total = audioReader.TotalTime;
             lblCurrentTime.Text = $"{current:mm\\:ss} / {total:mm\\:ss}";
 
-            int waveformLength = waveformPlot?.Series.Count > 0
-                ? (int)((OxyPlot.Series.LineSeries)waveformPlot.Series[2]).Points.Count
-                  + (int)((OxyPlot.Series.LineSeries)waveformPlot.Series[0]).Points.Count
-                : 0;
-
-            int playedIndex = totalSamples > 0 && waveformLength > 0 ? (int)((float)seekSample / totalSamples * waveformLength) : 0;
+            int playedIndex = totalSamples > 0 && waveformDisplayLength > 0
+            ? (int)((float)seekSample / totalSamples * waveformDisplayLength)
+            : 0;
 
             DrawWaveform(cachedSamples, playedIndex);
         }
@@ -396,7 +398,379 @@ namespace Project
 
         public string CurrentFilePath => currentFilePath;
 
-    }
+        private async void btnCompress_Click(object sender, EventArgs e)
+        {
+            if (cachedSamples == null || cachedSamples.Length == 0)
+            {
+                MessageBox.Show("لا يوجد ملف صوتي محمّل.", "تنبيه",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
 
+            using (SaveFileDialog sfd = new SaveFileDialog())
+            {
+                sfd.Title = "حفظ الملف المضغوط";
+                sfd.Filter = "Compressed Audio|*.caud";
+                sfd.FileName = Path.GetFileNameWithoutExtension(currentFilePath) + "_compressed";
+
+                if (sfd.ShowDialog() != DialogResult.OK) return;
+
+                string outputPath = sfd.FileName;
+                int selectedAlgo = cmbAlgorithm.SelectedIndex;
+                float[] samples = fullSamples;
+
+                int sampleRate = (int)nudSampleRate.Value;
+                int quantLevels = (int)nudQuantLevels.Value;
+
+                // UI - Start Compress Edits
+                compressBtn.Enabled = false;
+                decompressBtn.Enabled = false;
+                cancelBtn.Enabled = true;
+                cancelBtn.Visible = true;
+                
+
+                compressionCts = new CancellationTokenSource();
+                var token = compressionCts.Token;
+
+                progressBar.Value = 0;
+                progressBar.Visible = true;
+
+                var progress = new Progress<int>(value =>
+                {
+                    progressBar.Value = value;
+                    lblStatus.Text = $"%جاري الضغط - أكتمل {value}";
+                });
+                
+
+                compressionStopwatch.Restart();
+
+                string header;
+                byte[] compressed = null;
+
+
+                switch (selectedAlgo)
+                {
+                    case 0: header = "DLTA"; compressed = await Task.Run(() => CompressDelta(samples, token, progress)); break;
+                    case 1: header = "ADLTA"; compressed = await Task.Run(() => CompressADM(samples, token, progress)); break;
+                    default: return;
+                }
+
+                progressBar.Visible = false;
+
+                if (compressed == null)
+                {
+                    lblStatus.Text = "تم إلغاء الضغط";
+                    compressBtn.Enabled = true;
+                    decompressBtn.Enabled = true;
+                    cancelBtn.Enabled = false;
+                    cancelBtn.Visible = false;
+                    return;
+                }
+
+                compressionStopwatch.Stop();
+
+                SaveCompressed(outputPath, header, compressed, sampleRate, quantLevels, fullSamples.Length);
+
+                long originalSize = new FileInfo(currentFilePath).Length;
+                long compressedSize = new FileInfo(outputPath).Length;
+                double ratio = (1.0 - (double)compressedSize / originalSize) * 100;
+                double elapsed2 = compressionStopwatch.Elapsed.TotalSeconds;
+
+                ShowCompressionReport(header, originalSize, compressedSize, ratio, elapsed2, sampleRate, quantLevels);
+
+                lblStatus.Text = $"اكتمل الضغط — توفير {ratio:F1} %";
+                compressBtn.Enabled = true;
+                decompressBtn.Enabled = true;
+                cancelBtn.Enabled = false;
+                cancelBtn.Visible = false;
+            }
+        }
+        private void btnCancel_Click(object sender, EventArgs e)
+        {
+            compressionCts?.Cancel();
+        }
+        private void btnDecompress_Click(object sender, EventArgs e)
+        {
+            using (OpenFileDialog ofd = new OpenFileDialog())
+            {
+                ofd.Title = "اختر الملف المضغوط";
+                ofd.Filter = "Compressed Audio|*.caud";
+
+                if (ofd.ShowDialog() != DialogResult.OK) return;
+
+                using (SaveFileDialog sfd = new SaveFileDialog())
+                {
+                    sfd.Title = "حفظ الملف بعد فك الضغط";
+                    sfd.Filter = "WAV Files|*.wav";
+                    sfd.FileName = Path.GetFileNameWithoutExtension(ofd.FileName) + "_decompressed";
+
+                    if (sfd.ShowDialog() != DialogResult.OK) return;
+
+                    string header;
+                    int srOut, qlOut, channelsOut;
+                    float[] decompressed = LoadAndDecompress(ofd.FileName, out header, out srOut, out qlOut, out channelsOut);
+
+                    if (decompressed == null || decompressed.Length == 0)
+                    {
+                        MessageBox.Show("Failed to decompress.", "Error",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+
+                    // Must use IEEE float format to match WriteSamples
+                    var format = new WaveFormat(srOut, 16, channelsOut);
+                    using (var writer = new WaveFileWriter(sfd.FileName, format))
+                    {
+                        short[] pcm = new short[decompressed.Length];
+                        for (int i = 0; i < decompressed.Length; i++)
+                            pcm[i] = (short)Math.Clamp(decompressed[i] * 32767f, -32768f, 32767f);
+
+                        byte[] pcmBytes = new byte[pcm.Length * 2];
+                        Buffer.BlockCopy(pcm, 0, pcmBytes, 0, pcmBytes.Length);
+                        writer.Write(pcmBytes, 0, pcmBytes.Length);
+                    }
+
+                    MessageBox.Show(
+                        $"Algorithm : {header}\n" +
+                        $"Samples   : {decompressed.Length:N0}\n" +
+                        $"Saved to  : {Path.GetFileName(sfd.FileName)}",
+                        "Decompression Done", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+            }
+        }
+        private float[] LoadAndDecompress(string path, out string header, out int sampleRate, out int quantLevels, out int channels)
+        {
+            header = null; sampleRate = 44100; quantLevels = 256; channels = 1;
+            try
+            {
+                using (var fs = new FileStream(path, FileMode.Open))
+                using (var br = new BinaryReader(fs))
+                {
+                    header = new string(br.ReadChars(5)).Trim();
+                    sampleRate = br.ReadInt32();
+                    quantLevels = br.ReadInt32();
+                    int byteCount = br.ReadInt32();
+                    channels = br.ReadInt32();
+                    int originalSampleCount = br.ReadInt32();
+                    byte[] data = br.ReadBytes(byteCount);
+
+                    switch (header)
+                    {
+                        case "DLTA": return DecompressDelta(data, originalSampleCount);
+                        case "ADLTA": return DecompressADM(data, originalSampleCount);
+                        default: return null;
+                    }
+                }
+            }
+            catch { return null; }
+        }
+        private void SaveCompressed(string path, string header, byte[] data, int sampleRate, int quantLevels, int originalSampleCount)
+        {
+            using (var fs = new FileStream(path, FileMode.Create))
+            using (var bw = new BinaryWriter(fs))
+            {
+                bw.Write(header.PadRight(5).ToCharArray(), 0, 5);
+                bw.Write(sampleRate);
+                bw.Write(quantLevels);
+                bw.Write(data.Length);
+                bw.Write(audioChannels);
+                bw.Write(originalSampleCount);
+                bw.Write(data);
+            }
+        }
+
+        // Delta Modualtion
+        private byte[] CompressDelta(float[] samples, CancellationToken token, IProgress<int> progress)
+        {
+            if (samples == null || samples.Length == 0) return Array.Empty<byte>();
+
+            int byteCount = (samples.Length + 7) / 8;
+            byte[] result = new byte[byteCount];
+            float predicted = 0f;
+            float step = 0.01f;
+
+            for (int i = 0; i < samples.Length; i++)
+            {
+                if (token.IsCancellationRequested) return null;
+
+                int byteIndex = i / 8;
+                int bitIndex = i % 8;
+
+                if (samples[i] >= predicted)
+                {
+                    result[byteIndex] |= (byte)(1 << bitIndex);
+                    predicted += step;
+                }
+                else
+                {
+                    predicted -= step;
+                }
+
+                predicted = Math.Clamp(predicted, -1f, 1f);
+
+                if (i % 10000 == 0)
+                    progress?.Report((int)((float)i / samples.Length * 100));
+            }
+
+            progress?.Report(100);
+            return result;
+        }
+        private float[] DecompressDelta(byte[] data, int originalCount)
+        {
+            if (data == null || data.Length == 0) return Array.Empty<float>();
+
+            float[] samples = new float[originalCount];
+            float predicted = 0f;
+            float step = 0.01f;
+
+            for (int i = 0; i < originalCount; i++)
+            {
+                int byteIndex = i / 8;
+                int bitIndex = i % 8;
+                
+                bool bit = (data[byteIndex] & (1 << bitIndex)) != 0;
+
+                if (bit)
+                    predicted += step;
+                else
+                    predicted -= step;
+
+                predicted = Math.Clamp(predicted, -1f, 1f);
+                samples[i] = predicted;
+            }
+
+            return samples;
+        }
+
+
+
+
+        // Adaptive Delta Modulation
+        private byte[] CompressADM(float[] samples, CancellationToken token, IProgress<int> progress)
+        {
+            if (samples == null || samples.Length == 0)
+                return Array.Empty<byte>();
+
+            int byteCount = (samples.Length + 7) / 8;
+            byte[] result = new byte[byteCount];
+
+            float predicted = 0f;
+
+            float step = 0.01f;
+            const float minStep = 0.0005f;
+            const float maxStep = 0.1f;
+
+            int previousBit = -1;
+
+            for (int i = 0; i < samples.Length; i++)
+            {
+                if (token.IsCancellationRequested)
+                    return null;
+
+                int currentBit;
+
+                if (samples[i] >= predicted)
+                {
+                    currentBit = 1;
+                    predicted += step;
+
+                    result[i / 8] |= (byte)(1 << (i % 8));
+                }
+                else
+                {
+                    currentBit = 0;
+                    predicted -= step;
+                }
+
+                // Adaptive step update
+                if (previousBit != -1)
+                {
+                    if (currentBit == previousBit)
+                    {
+                        step *= 1.5f; // increase step
+                    }
+                    else
+                    {
+                        step *= 0.75f; // decrease step
+                    }
+
+                    step = Math.Clamp(step, minStep, maxStep);
+                }
+
+                previousBit = currentBit;
+                predicted = Math.Clamp(predicted, -1f, 1f);
+                if (i % 10000 == 0)
+                    progress?.Report((int)((float)i / samples.Length * 100));
+            }
+
+            progress?.Report(100);
+            return result;
+        }
+
+        private float[] DecompressADM(byte[] data, int originalCount)
+        {
+            float[] samples = new float[originalCount];
+
+            float predicted = 0f;
+
+            float step = 0.01f;
+            const float minStep = 0.0005f;
+            const float maxStep = 0.1f;
+
+            int previousBit = -1;
+
+            for (int i = 0; i < originalCount; i++)
+            {
+                bool bit = (data[i / 8] & (1 << (i % 8))) != 0;
+
+                int currentBit = bit ? 1 : 0;
+
+                if (bit)
+                    predicted += step;
+                else
+                    predicted -= step;
+
+                predicted = Math.Clamp(predicted, -1f, 1f);
+
+                samples[i] = predicted;
+
+                // Adaptive step update
+                if (previousBit != -1)
+                {
+                    if (currentBit == previousBit)
+                        step *= 1.5f;
+                    else
+                        step *= 0.75f;
+
+                    step = Math.Clamp(step, minStep, maxStep);
+                }
+
+                previousBit = currentBit;
+            }
+
+            return samples;
+        }
+        
+      
+        private void ShowCompressionReport(string algo, long original, long compressed,
+            double ratio, double elapsed, int sampleRate, int quantLevels)
+        {
+            string report =
+                $"━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                $"  Compression Report\n" +
+                $"━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                $"Algorithm    : {algo}\n" +
+                $"Sample Rate  : {sampleRate} Hz\n" +
+                $"Quant Levels : {quantLevels}\n\n" +
+                $"Original     : {original / 1024.0:F1} KB\n" +
+                $"Compressed   : {compressed / 1024.0:F1} KB\n" +
+                $"Saved        : {ratio:F1}%\n\n" +
+                $"Time Elapsed : {elapsed:F2} sec\n" +
+                $"━━━━━━━━━━━━━━━━━━━━━━━━";
+
+            MessageBox.Show(report, "Compression Report",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+    }
 
 }
