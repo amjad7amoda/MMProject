@@ -41,6 +41,7 @@
             decompressBtn = new Button();
             cmbAlgorithm = new ComboBox();
             compressBox = new GroupBox();
+            plotCompression = new OxyPlot.WindowsForms.PlotView();
             nudSampleRate = new NumericUpDown();
             label2 = new Label();
             label1 = new Label();
@@ -68,7 +69,7 @@
             // btnBrowse
             // 
             btnBrowse.Anchor = AnchorStyles.Bottom;
-            btnBrowse.Location = new Point(437, 221);
+            btnBrowse.Location = new Point(437, 226);
             btnBrowse.Name = "btnBrowse";
             btnBrowse.Size = new Size(94, 29);
             btnBrowse.TabIndex = 2;
@@ -171,7 +172,7 @@
             // cmbAlgorithm
             // 
             cmbAlgorithm.FormattingEnabled = true;
-            cmbAlgorithm.Items.AddRange(new object[] { "DLTA", "ADLTA" });
+            cmbAlgorithm.Items.AddRange(new object[] { "DPCM", "DLTA", "ADLTA" });
             cmbAlgorithm.Location = new Point(134, 26);
             cmbAlgorithm.Name = "cmbAlgorithm";
             cmbAlgorithm.Size = new Size(525, 28);
@@ -179,6 +180,7 @@
             // 
             // compressBox
             // 
+            compressBox.Controls.Add(plotCompression);
             compressBox.Controls.Add(nudSampleRate);
             compressBox.Controls.Add(label2);
             compressBox.Controls.Add(label1);
@@ -189,15 +191,29 @@
             compressBox.Controls.Add(cmbAlgorithm);
             compressBox.Controls.Add(compressBtn);
             compressBox.Controls.Add(decompressBtn);
-            compressBox.Location = new Point(44, 370);
+            compressBox.Location = new Point(44, 308);
             compressBox.Name = "compressBox";
-            compressBox.Size = new Size(906, 183);
+            compressBox.Size = new Size(906, 395);
             compressBox.TabIndex = 14;
             compressBox.TabStop = false;
             compressBox.Text = "Compress Box";
             // 
+            // plotCompression
+            // 
+            plotCompression.BackColor = SystemColors.ControlDark;
+            plotCompression.Location = new Point(18, 147);
+            plotCompression.Name = "plotCompression";
+            plotCompression.PanCursor = Cursors.Hand;
+            plotCompression.Size = new Size(868, 242);
+            plotCompression.TabIndex = 21;
+            plotCompression.Text = "plotView1";
+            plotCompression.ZoomHorizontalCursor = Cursors.SizeWE;
+            plotCompression.ZoomRectangleCursor = Cursors.SizeNWSE;
+            plotCompression.ZoomVerticalCursor = Cursors.SizeNS;
+            // 
             // nudSampleRate
             // 
+            nudSampleRate.Enabled = false;
             nudSampleRate.Location = new Point(242, 73);
             nudSampleRate.Maximum = new decimal(new int[] { 100000, 0, 0, 0 });
             nudSampleRate.Name = "nudSampleRate";
@@ -225,18 +241,18 @@
             // 
             // nudQuantLevels
             // 
+            nudQuantLevels.Enabled = false;
             nudQuantLevels.Location = new Point(571, 73);
             nudQuantLevels.Maximum = new decimal(new int[] { 10000000, 0, 0, 0 });
             nudQuantLevels.Name = "nudQuantLevels";
             nudQuantLevels.Size = new Size(88, 27);
             nudQuantLevels.TabIndex = 16;
             nudQuantLevels.TextAlign = HorizontalAlignment.Center;
-            nudQuantLevels.Value = new decimal(new int[] { 256, 0, 0, 0 });
             // 
             // lblStatus
             // 
             lblStatus.AutoSize = true;
-            lblStatus.Location = new Point(695, 121);
+            lblStatus.Location = new Point(695, 111);
             lblStatus.Name = "lblStatus";
             lblStatus.Size = new Size(0, 20);
             lblStatus.TabIndex = 16;
@@ -244,7 +260,7 @@
             // 
             // progressBar
             // 
-            progressBar.Location = new Point(134, 121);
+            progressBar.Location = new Point(134, 108);
             progressBar.Name = "progressBar";
             progressBar.Size = new Size(525, 29);
             progressBar.TabIndex = 15;
@@ -258,7 +274,6 @@
             cancelBtn.TabIndex = 14;
             cancelBtn.Text = "إلغاء";
             cancelBtn.UseVisualStyleBackColor = true;
-            cancelBtn.Visible = false;
             cancelBtn.Click += btnCancel_Click;
             // 
             // groupBox1
@@ -279,7 +294,7 @@
             // 
             AutoScaleDimensions = new SizeF(8F, 20F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(962, 619);
+            ClientSize = new Size(962, 715);
             Controls.Add(groupBox1);
             Controls.Add(compressBox);
             Controls.Add(audioDetailsLbl);
@@ -321,5 +336,6 @@
         private Label label1;
         private NumericUpDown nudQuantLevels;
         private NumericUpDown nudSampleRate;
+        private OxyPlot.WindowsForms.PlotView plotCompression;
     }
 }

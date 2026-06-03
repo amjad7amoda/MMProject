@@ -28,6 +28,12 @@ namespace Project
         private System.Diagnostics.Stopwatch compressionStopwatch = new System.Diagnostics.Stopwatch();
         private int audioChannels = 1;
         private int waveformDisplayLength = 0;
+        private PlotModel compressionPlot;
+        private LineSeries ratioSeries;
+        private LineSeries speedSeries;
+        private int lastReportedSample = 0;
+        private System.Diagnostics.Stopwatch segmentWatch = new System.Diagnostics.Stopwatch();
+        private int bitsPerSample = 16;
 
         public Form1()
         {
@@ -128,7 +134,7 @@ namespace Project
             int bitRate = audioReader.WaveFormat.AverageBytesPerSecond * 8;
             string encoding = audioReader.WaveFormat.Encoding.ToString();
             FileInfo fi = new FileInfo(currentFilePath);
-            double fileSize = fi.Length / (1024 * 1024);
+            double fileSize = fi.Length / (1024.0 * 1024.0);
 
 
             audioDetailsLbl.Text =
@@ -139,12 +145,21 @@ namespace Project
                 $"Encoding: {encoding}\n" +
                 $"File Size: {fileSize:F2} MB";
 
-            nudSampleRate.Value = sampleRate;
-            nudQuantLevels.Value = bitRate;
+            nudSampleRate.Value = sampleRate; nudSampleRate.Enabled = true;
+            nudQuantLevels.Value = bitRate; nudQuantLevels.Enabled = true;
         }
 
         private void LoadWaveformSamples(string filePath)
         {
+
+            string ext = Path.GetExtension(filePath).ToLower();
+
+            if (ext == ".wav")
+            {
+                using (var wfr = new WaveFileReader(filePath))
+                    bitsPerSample = wfr.WaveFormat.BitsPerSample;
+            }
+
             audioReader = new AudioFileReader(filePath);
             audioChannels = audioReader.WaveFormat.Channels;
 
@@ -432,34 +447,52 @@ namespace Project
                 compressionCts = new CancellationTokenSource();
                 var token = compressionCts.Token;
 
+                InitCompressionPlot();
                 progressBar.Value = 0;
                 progressBar.Visible = true;
+                plotCompression.Visible = true;
 
-                var progress = new Progress<int>(value =>
+                long originalSize = new FileInfo(currentFilePath).Length;
+
+                var progress = new Progress<CompressionProgressData>(data =>
                 {
-                    progressBar.Value = value;
-                    lblStatus.Text = $"%جاري الضغط - أكتمل {value}";
-                });
-                
+                    int percent = (int)((float)data.SampleIndex / data.TotalSamples * 100);
+                    progressBar.Value = Math.Min(percent, 100);
+                    lblStatus.Text = $"Compressing... {percent}%";
 
+                    double compressionRatio = (1.0 - (double)data.CompressedBytes / originalSize) * 100;
+                    compressionRatio = Math.Max(0, Math.Min(compressionRatio, 100));
+
+                    int samplesProcessed = data.SampleIndex - lastReportedSample;
+                    double elapsedSec = segmentWatch.Elapsed.TotalSeconds;
+                    double kSamplesPerSec = elapsedSec > 0 ? (samplesProcessed / 1000.0) / elapsedSec : 0;
+
+                    lastReportedSample = data.SampleIndex;
+                    segmentWatch.Restart();
+
+                    ratioSeries.Points.Add(new DataPoint(percent, compressionRatio));
+                    speedSeries.Points.Add(new DataPoint(percent, kSamplesPerSec));
+
+                    compressionPlot.InvalidatePlot(true);
+                });
                 compressionStopwatch.Restart();
 
                 string header;
                 byte[] compressed = null;
 
-
                 switch (selectedAlgo)
                 {
                     case 0: header = "DLTA"; compressed = await Task.Run(() => CompressDelta(samples, token, progress)); break;
                     case 1: header = "ADLTA"; compressed = await Task.Run(() => CompressADM(samples, token, progress)); break;
+                    case 2: header = "DPCM"; compressed = await Task.Run(() => CompressDPCM(samples, token, progress)); break;
                     default: return;
                 }
 
-                progressBar.Visible = false;
 
                 if (compressed == null)
                 {
-                    lblStatus.Text = "تم إلغاء الضغط";
+                    progressBar.Value = 0;
+                    lblStatus.Text = "Compression canceled";
                     compressBtn.Enabled = true;
                     decompressBtn.Enabled = true;
                     cancelBtn.Enabled = false;
@@ -468,17 +501,16 @@ namespace Project
                 }
 
                 compressionStopwatch.Stop();
-
                 SaveCompressed(outputPath, header, compressed, sampleRate, quantLevels, fullSamples.Length);
 
-                long originalSize = new FileInfo(currentFilePath).Length;
                 long compressedSize = new FileInfo(outputPath).Length;
                 double ratio = (1.0 - (double)compressedSize / originalSize) * 100;
                 double elapsed2 = compressionStopwatch.Elapsed.TotalSeconds;
 
                 ShowCompressionReport(header, originalSize, compressedSize, ratio, elapsed2, sampleRate, quantLevels);
 
-                lblStatus.Text = $"اكتمل الضغط — توفير {ratio:F1} %";
+                lblStatus.Text = $"Compressed. You save {ratio:F1}%";
+                progressBar.Value = 100;
                 compressBtn.Enabled = true;
                 decompressBtn.Enabled = true;
                 cancelBtn.Enabled = false;
@@ -507,8 +539,8 @@ namespace Project
                     if (sfd.ShowDialog() != DialogResult.OK) return;
 
                     string header;
-                    int srOut, qlOut, channelsOut;
-                    float[] decompressed = LoadAndDecompress(ofd.FileName, out header, out srOut, out qlOut, out channelsOut);
+                    int srOut, qlOut, channelsOut, bitsPerSample;
+                    float[] decompressed = LoadAndDecompress(ofd.FileName, out header, out srOut, out qlOut, out channelsOut, out bitsPerSample);
 
                     if (decompressed == null || decompressed.Length == 0)
                     {
@@ -518,16 +550,27 @@ namespace Project
                     }
 
                     // Must use IEEE float format to match WriteSamples
-                    var format = new WaveFormat(srOut, 16, channelsOut);
+                    var format = new WaveFormat(srOut, bitsPerSample, channelsOut);
+                    MessageBox.Show($"{bitsPerSample}");
                     using (var writer = new WaveFileWriter(sfd.FileName, format))
                     {
-                        short[] pcm = new short[decompressed.Length];
-                        for (int i = 0; i < decompressed.Length; i++)
-                            pcm[i] = (short)Math.Clamp(decompressed[i] * 32767f, -32768f, 32767f);
-
-                        byte[] pcmBytes = new byte[pcm.Length * 2];
-                        Buffer.BlockCopy(pcm, 0, pcmBytes, 0, pcmBytes.Length);
-                        writer.Write(pcmBytes, 0, pcmBytes.Length);
+                        if (bitsPerSample == 8)
+                        {
+                            // 8-bit WAV unsigned (0–255)
+                            byte[] pcmBytes = new byte[decompressed.Length];
+                            for (int i = 0; i < decompressed.Length; i++)
+                                pcmBytes[i] = (byte)Math.Clamp((decompressed[i] + 1f) * 127.5f, 0, 255);
+                            writer.Write(pcmBytes, 0, pcmBytes.Length);
+                        }
+                        else // 16-bit
+                        {
+                            short[] pcm = new short[decompressed.Length];
+                            for (int i = 0; i < decompressed.Length; i++)
+                                pcm[i] = (short)Math.Clamp(decompressed[i] * 32767f, -32768f, 32767f);
+                            byte[] pcmBytes = new byte[pcm.Length * 2];
+                            Buffer.BlockCopy(pcm, 0, pcmBytes, 0, pcmBytes.Length);
+                            writer.Write(pcmBytes, 0, pcmBytes.Length);
+                        }
                     }
 
                     MessageBox.Show(
@@ -538,9 +581,9 @@ namespace Project
                 }
             }
         }
-        private float[] LoadAndDecompress(string path, out string header, out int sampleRate, out int quantLevels, out int channels)
+        private float[] LoadAndDecompress(string path, out string header, out int sampleRate, out int quantLevels, out int channels, out int bitsPerSample)
         {
-            header = null; sampleRate = 44100; quantLevels = 256; channels = 1;
+            header = null; sampleRate = 44100; quantLevels = 256; channels = 1; bitsPerSample = 8;
             try
             {
                 using (var fs = new FileStream(path, FileMode.Open))
@@ -552,12 +595,14 @@ namespace Project
                     int byteCount = br.ReadInt32();
                     channels = br.ReadInt32();
                     int originalSampleCount = br.ReadInt32();
+                    bitsPerSample = br.ReadInt32();
                     byte[] data = br.ReadBytes(byteCount);
 
                     switch (header)
                     {
                         case "DLTA": return DecompressDelta(data, originalSampleCount);
                         case "ADLTA": return DecompressADM(data, originalSampleCount);
+                        case "DPCM": return DecompressDPCM(data, originalSampleCount);
                         default: return null;
                     }
                 }
@@ -575,12 +620,63 @@ namespace Project
                 bw.Write(data.Length);
                 bw.Write(audioChannels);
                 bw.Write(originalSampleCount);
+                bw.Write(bitsPerSample);
                 bw.Write(data);
             }
         }
 
+
+        private record CompressionProgressData(int SampleIndex, int TotalSamples, long CompressedBytes);
+
+
+        // DPCM 
+        private byte[] CompressDPCM(float[] samples, CancellationToken token, IProgress<CompressionProgressData> progress)
+        {
+            if (samples == null || samples.Length == 0) return Array.Empty<byte>();
+
+            byte[] result = new byte[samples.Length];
+            float previous = 0f;
+
+            for (int i = 0; i < samples.Length; i++)
+            {
+                if (token.IsCancellationRequested) return null;
+
+                float diff = samples[i] - previous;
+
+                int quantized = (int)Math.Clamp(diff * 127f, -128f, 127f);
+                result[i] = (byte)(quantized & 0xFF);
+                previous = Math.Clamp(previous + quantized / 127f, -1f, 1f);
+
+                if (i % 10000 == 0)
+                    progress?.Report(new CompressionProgressData(i, samples.Length, i));
+            }
+
+            progress?.Report(new CompressionProgressData(samples.Length, samples.Length, samples.Length));
+            return result;
+        }
+
+        private float[] DecompressDPCM(byte[] data, int originalCount)
+        {
+            if (data == null || data.Length == 0) return Array.Empty<float>();
+
+            float[] samples = new float[originalCount];
+            float previous = 0f;
+
+            for (int i = 0; i < originalCount; i++)
+            {
+                // Convert back from unsigned byte to signed
+                int quantized = (sbyte)data[i];
+
+                previous = Math.Clamp(previous + quantized / 127f, -1f, 1f);
+                samples[i] = previous;
+            }
+
+            return samples;
+        }
+
+
         // Delta Modualtion
-        private byte[] CompressDelta(float[] samples, CancellationToken token, IProgress<int> progress)
+        private byte[] CompressDelta(float[] samples, CancellationToken token, IProgress<CompressionProgressData> progress)
         {
             if (samples == null || samples.Length == 0) return Array.Empty<byte>();
 
@@ -609,10 +705,11 @@ namespace Project
                 predicted = Math.Clamp(predicted, -1f, 1f);
 
                 if (i % 10000 == 0)
-                    progress?.Report((int)((float)i / samples.Length * 100));
+                    progress?.Report(new CompressionProgressData(i, samples.Length, i / 8));
+
             }
 
-            progress?.Report(100);
+            progress?.Report(new CompressionProgressData(samples.Length, samples.Length, samples.Length / 8));
             return result;
         }
         private float[] DecompressDelta(byte[] data, int originalCount)
@@ -641,12 +738,12 @@ namespace Project
 
             return samples;
         }
-
+            
 
 
 
         // Adaptive Delta Modulation
-        private byte[] CompressADM(float[] samples, CancellationToken token, IProgress<int> progress)
+        private byte[] CompressADM(float[] samples, CancellationToken token, IProgress<CompressionProgressData> progress)
         {
             if (samples == null || samples.Length == 0)
                 return Array.Empty<byte>();
@@ -700,10 +797,10 @@ namespace Project
                 previousBit = currentBit;
                 predicted = Math.Clamp(predicted, -1f, 1f);
                 if (i % 10000 == 0)
-                    progress?.Report((int)((float)i / samples.Length * 100));
+                    progress?.Report(new CompressionProgressData(i, samples.Length, i / 8));
             }
 
-            progress?.Report(100);
+            progress?.Report(new CompressionProgressData(samples.Length, samples.Length, samples.Length / 8));
             return result;
         }
 
@@ -750,8 +847,88 @@ namespace Project
 
             return samples;
         }
-        
-      
+
+
+
+        private void InitCompressionPlot()
+        {
+            int compressionStep = 0;
+            lastReportedSample = 0;
+
+            compressionPlot = new PlotModel
+            {
+                Background = OxyColors.Black,
+                PlotAreaBorderColor = OxyColors.Gray,
+                TextColor = OxyColors.White,
+                TitleColor = OxyColors.White,
+                Title = "Compression Progress"
+            };
+
+            compressionPlot.Axes.Add(new LinearAxis
+            {
+                Position = AxisPosition.Bottom,
+                Title = "Progress %",
+                Minimum = 0,
+                Maximum = 100,
+                TextColor = OxyColors.White,
+                TitleColor = OxyColors.White,
+                TicklineColor = OxyColors.Gray
+            });
+
+            // Y-axis for Compression Ratio (Left)
+            compressionPlot.Axes.Add(new LinearAxis
+            {
+                Position = AxisPosition.Left,
+                Title = "Compression Ratio %",
+                Minimum = 0,
+                Maximum = 100,
+                TextColor = OxyColors.DeepSkyBlue,
+                TitleColor = OxyColors.DeepSkyBlue,
+                TicklineColor = OxyColors.Gray,
+                Key = "ratio"
+            });
+
+            // Y-axis for Speed (Right)
+            compressionPlot.Axes.Add(new LinearAxis
+            {
+                Position = AxisPosition.Right,
+                Title = "Speed (kSamples/sec)",
+                Minimum = 0,
+                TextColor = OxyColors.Yellow,
+                TitleColor = OxyColors.Yellow,
+                TicklineColor = OxyColors.Gray,
+                Key = "speed"
+            });
+
+            ratioSeries = new LineSeries
+            {
+                Title = "Compression Ratio %",
+                Color = OxyColors.DeepSkyBlue,
+                StrokeThickness = 2,
+                YAxisKey = "ratio"
+            };
+
+            speedSeries = new LineSeries
+            {
+                Title = "Speed (kSamples/sec)",
+                Color = OxyColors.Yellow,
+                StrokeThickness = 2,
+                YAxisKey = "speed"
+            };
+
+            compressionPlot.Series.Add(ratioSeries);
+            compressionPlot.Series.Add(speedSeries);
+
+            compressionPlot.Legends.Add(new OxyPlot.Legends.Legend
+            {
+                LegendPosition = OxyPlot.Legends.LegendPosition.TopLeft,
+                LegendTextColor = OxyColors.White
+            });
+
+            plotCompression.Model = compressionPlot;
+            segmentWatch.Restart();
+        }
+
         private void ShowCompressionReport(string algo, long original, long compressed,
             double ratio, double elapsed, int sampleRate, int quantLevels)
         {
