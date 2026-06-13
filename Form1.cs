@@ -34,6 +34,12 @@ namespace Project
         private int lastReportedSample = 0;
         private System.Diagnostics.Stopwatch segmentWatch = new System.Diagnostics.Stopwatch();
         private int bitsPerSample = 16;
+        private byte[] _lastCompressed = null;
+        private string _lastHeader = string.Empty;
+        private int _lastSampleRate = 0;
+        private int _lastQuantLevels = 0;
+        private long _lastOriginalSize = 0;
+        private double _lastElapsed = 0;
 
         public Form1()
         {
@@ -422,6 +428,94 @@ namespace Project
                 return;
             }
 
+            int selectedAlgo = cmbAlgorithm.SelectedIndex;
+            float[] samples = fullSamples;
+            int sampleRate = (int)nudSampleRate.Value;
+            int quantLevels = (int)nudQuantLevels.Value;
+
+            btnCompress.Enabled = false;
+            btnDecompress.Enabled = false;
+            btnSave.Enabled = false;
+            btnReport.Enabled = false;
+            btnCancel.Enabled = true;
+
+            compressionCts = new CancellationTokenSource();
+            var token = compressionCts.Token;
+
+            InitCompressionPlot();
+            progressBar.Value = 0;
+            progressBar.Visible = true;
+            plotCompression.Visible = true;
+
+            long originalSize = new FileInfo(currentFilePath).Length;
+
+            var progress = new Progress<CompressionProgressData>(data =>
+            {
+                int percent = (int)((float)data.SampleIndex / data.TotalSamples * 100);
+                progressBar.Value = Math.Min(percent, 100);
+                lblStatus.Text = $"Compressing... {percent}%";
+
+                double compressionRatio = (1.0 - (double)data.CompressedBytes / originalSize) * 100;
+                compressionRatio = Math.Max(0, Math.Min(compressionRatio, 100));
+
+                int samplesProcessed = data.SampleIndex - lastReportedSample;
+                double elapsedSec = segmentWatch.Elapsed.TotalSeconds;
+                double kSamplesPerSec = elapsedSec > 0 ? (samplesProcessed / 1000.0) / elapsedSec : 0;
+
+                lastReportedSample = data.SampleIndex;
+                segmentWatch.Restart();
+
+                ratioSeries.Points.Add(new DataPoint(percent, compressionRatio));
+                speedSeries.Points.Add(new DataPoint(percent, kSamplesPerSec));
+                compressionPlot.InvalidatePlot(true);
+            });
+
+            compressionStopwatch.Restart();
+
+            switch (selectedAlgo)
+            {
+                case 0: _lastHeader = "DLTA"; _lastCompressed = await Task.Run(() => CompressDelta(samples, token, progress)); break;
+                case 1: _lastHeader = "ADLTA"; _lastCompressed = await Task.Run(() => CompressADM(samples, token, progress)); break;
+                case 2: _lastHeader = "DPCM"; _lastCompressed = await Task.Run(() => CompressDPCM(samples, token, progress)); break;
+                default: return;
+            }
+
+            compressionStopwatch.Stop();
+
+            if (_lastCompressed == null)
+            {
+                progressBar.Value = 0;
+                lblStatus.Text = "Compression canceled";
+                btnCompress.Enabled = true;
+                btnDecompress.Enabled = true;
+                btnCancel.Enabled = false;
+                return;
+            }
+
+            _lastSampleRate = sampleRate;
+            _lastQuantLevels = quantLevels;
+            _lastOriginalSize = originalSize;
+            _lastElapsed = compressionStopwatch.Elapsed.TotalSeconds;
+
+            progressBar.Value = 100;
+            lblStatus.Text = "Compression done";
+
+            btnCompress.Enabled = true;
+            btnDecompress.Enabled = true;
+            btnCancel.Enabled = false;
+            btnSave.Enabled = true;
+            btnReport.Enabled = true;
+        }
+
+        private void btnSave_Click(object sender, EventArgs e)
+        {
+            if (_lastCompressed == null)
+            {
+                MessageBox.Show("لا يوجد ملف مضغوط. قم بالضغط أولاً.", "تنبيه",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
             using (SaveFileDialog sfd = new SaveFileDialog())
             {
                 sfd.Title = "حفظ الملف المضغوط";
@@ -430,91 +524,15 @@ namespace Project
 
                 if (sfd.ShowDialog() != DialogResult.OK) return;
 
-                string outputPath = sfd.FileName;
-                int selectedAlgo = cmbAlgorithm.SelectedIndex;
-                float[] samples = fullSamples;
+                SaveCompressed(sfd.FileName, _lastHeader, _lastCompressed,
+                               _lastSampleRate, _lastQuantLevels, fullSamples.Length);
 
-                int sampleRate = (int)nudSampleRate.Value;
-                int quantLevels = (int)nudQuantLevels.Value;
+                long savedSize = new FileInfo(sfd.FileName).Length;
+                lblStatus.Text = $"Saved: {Path.GetFileName(sfd.FileName)}";
 
-                // UI - Start Compress Edits
-                compressBtn.Enabled = false;
-                decompressBtn.Enabled = false;
-                cancelBtn.Enabled = true;
-                cancelBtn.Visible = true;
-                
-
-                compressionCts = new CancellationTokenSource();
-                var token = compressionCts.Token;
-
-                InitCompressionPlot();
-                progressBar.Value = 0;
-                progressBar.Visible = true;
-                plotCompression.Visible = true;
-
-                long originalSize = new FileInfo(currentFilePath).Length;
-
-                var progress = new Progress<CompressionProgressData>(data =>
-                {
-                    int percent = (int)((float)data.SampleIndex / data.TotalSamples * 100);
-                    progressBar.Value = Math.Min(percent, 100);
-                    lblStatus.Text = $"Compressing... {percent}%";
-
-                    double compressionRatio = (1.0 - (double)data.CompressedBytes / originalSize) * 100;
-                    compressionRatio = Math.Max(0, Math.Min(compressionRatio, 100));
-
-                    int samplesProcessed = data.SampleIndex - lastReportedSample;
-                    double elapsedSec = segmentWatch.Elapsed.TotalSeconds;
-                    double kSamplesPerSec = elapsedSec > 0 ? (samplesProcessed / 1000.0) / elapsedSec : 0;
-
-                    lastReportedSample = data.SampleIndex;
-                    segmentWatch.Restart();
-
-                    ratioSeries.Points.Add(new DataPoint(percent, compressionRatio));
-                    speedSeries.Points.Add(new DataPoint(percent, kSamplesPerSec));
-
-                    compressionPlot.InvalidatePlot(true);
-                });
-                compressionStopwatch.Restart();
-
-                string header;
-                byte[] compressed = null;
-
-                switch (selectedAlgo)
-                {
-                    case 0: header = "DLTA"; compressed = await Task.Run(() => CompressDelta(samples, token, progress)); break;
-                    case 1: header = "ADLTA"; compressed = await Task.Run(() => CompressADM(samples, token, progress)); break;
-                    case 2: header = "DPCM"; compressed = await Task.Run(() => CompressDPCM(samples, token, progress)); break;
-                    default: return;
-                }
-
-
-                if (compressed == null)
-                {
-                    progressBar.Value = 0;
-                    lblStatus.Text = "Compression canceled";
-                    compressBtn.Enabled = true;
-                    decompressBtn.Enabled = true;
-                    cancelBtn.Enabled = false;
-                    cancelBtn.Visible = false;
-                    return;
-                }
-
-                compressionStopwatch.Stop();
-                SaveCompressed(outputPath, header, compressed, sampleRate, quantLevels, fullSamples.Length);
-
-                long compressedSize = new FileInfo(outputPath).Length;
-                double ratio = (1.0 - (double)compressedSize / originalSize) * 100;
-                double elapsed2 = compressionStopwatch.Elapsed.TotalSeconds;
-
-                ShowCompressionReport(header, originalSize, compressedSize, ratio, elapsed2, sampleRate, quantLevels);
-
-                lblStatus.Text = $"Compressed. You save {ratio:F1}%";
-                progressBar.Value = 100;
-                compressBtn.Enabled = true;
-                decompressBtn.Enabled = true;
-                cancelBtn.Enabled = false;
-                cancelBtn.Visible = false;
+                MessageBox.Show(
+                    $"تم الحفظ بنجاح!\nالحجم: {savedSize / 1024.0:F1} KB\nالمسار: {sfd.FileName}",
+                    "تم الحفظ", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
         }
         private void btnCancel_Click(object sender, EventArgs e)
@@ -527,7 +545,6 @@ namespace Project
             {
                 ofd.Title = "اختر الملف المضغوط";
                 ofd.Filter = "Compressed Audio|*.caud";
-
                 if (ofd.ShowDialog() != DialogResult.OK) return;
 
                 using (SaveFileDialog sfd = new SaveFileDialog())
@@ -535,12 +552,11 @@ namespace Project
                     sfd.Title = "حفظ الملف بعد فك الضغط";
                     sfd.Filter = "WAV Files|*.wav";
                     sfd.FileName = Path.GetFileNameWithoutExtension(ofd.FileName) + "_decompressed";
-
                     if (sfd.ShowDialog() != DialogResult.OK) return;
 
                     string header;
-                    int srOut, qlOut, channelsOut, bitsPerSample;
-                    float[] decompressed = LoadAndDecompress(ofd.FileName, out header, out srOut, out qlOut, out channelsOut, out bitsPerSample);
+                    int srOut, qlOut, channelsOut, bitsPerSampleOut;
+                    float[] decompressed = LoadAndDecompress(ofd.FileName, out header, out srOut, out qlOut, out channelsOut, out bitsPerSampleOut);
 
                     if (decompressed == null || decompressed.Length == 0)
                     {
@@ -549,20 +565,17 @@ namespace Project
                         return;
                     }
 
-                    // Must use IEEE float format to match WriteSamples
-                    var format = new WaveFormat(srOut, bitsPerSample, channelsOut);
-                    MessageBox.Show($"{bitsPerSample}");
+                    var format = new WaveFormat(srOut, bitsPerSampleOut, channelsOut);
                     using (var writer = new WaveFileWriter(sfd.FileName, format))
                     {
-                        if (bitsPerSample == 8)
+                        if (bitsPerSampleOut == 8)
                         {
-                            // 8-bit WAV unsigned (0–255)
                             byte[] pcmBytes = new byte[decompressed.Length];
                             for (int i = 0; i < decompressed.Length; i++)
                                 pcmBytes[i] = (byte)Math.Clamp((decompressed[i] + 1f) * 127.5f, 0, 255);
                             writer.Write(pcmBytes, 0, pcmBytes.Length);
                         }
-                        else // 16-bit
+                        else
                         {
                             short[] pcm = new short[decompressed.Length];
                             for (int i = 0; i < decompressed.Length; i++)
@@ -574,12 +587,51 @@ namespace Project
                     }
 
                     MessageBox.Show(
-                        $"Algorithm : {header}\n" +
-                        $"Samples   : {decompressed.Length:N0}\n" +
-                        $"Saved to  : {Path.GetFileName(sfd.FileName)}",
+                        $"Algorithm : {header}\nSamples   : {decompressed.Length:N0}\nSaved to  : {Path.GetFileName(sfd.FileName)}",
                         "Decompression Done", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
             }
+        }
+
+        private void btnReport_Click(object sender, EventArgs e)
+        {
+            if (_lastCompressed == null)
+            {
+                MessageBox.Show("لا يوجد بيانات ضغط. قم بالضغط أولاً.", "تنبيه",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            double ratio = (1.0 - (double)_lastCompressed.Length / _lastOriginalSize) * 100;
+
+            ShowCompressionReport(
+                _lastHeader,
+                _lastOriginalSize,
+                _lastCompressed.Length,
+                ratio,
+                _lastElapsed,
+                _lastSampleRate,
+                _lastQuantLevels);
+        }
+
+        private void btnReset_Click(object sender, EventArgs e)
+        {
+            // إيقاف التشغيل
+            StopPlayback();
+
+            progressBar.Value = 0;
+            progressBar.Visible = false;
+            plotCompression.Visible = false;
+
+            lblStatus.Text = "";
+            btnPlay.Enabled = false;
+            btnPause.Enabled = false;
+            btnStop.Enabled = false;
+            btnSave.Enabled = false;
+            btnReport.Enabled = false;
+            btnCancel.Enabled = false;
+
+            cmbAlgorithm.SelectedIndex = 0;
         }
         private float[] LoadAndDecompress(string path, out string header, out int sampleRate, out int quantLevels, out int channels, out int bitsPerSample)
         {
@@ -803,7 +855,6 @@ namespace Project
             progress?.Report(new CompressionProgressData(samples.Length, samples.Length, samples.Length / 8));
             return result;
         }
-
         private float[] DecompressADM(byte[] data, int originalCount)
         {
             float[] samples = new float[originalCount];

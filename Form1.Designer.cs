@@ -37,10 +37,13 @@
             btnPause = new Button();
             plotWaveform = new OxyPlot.WindowsForms.PlotView();
             audioDetailsLbl = new Label();
-            compressBtn = new Button();
-            decompressBtn = new Button();
+            btnCompress = new Button();
+            btnDecompress = new Button();
             cmbAlgorithm = new ComboBox();
             compressBox = new GroupBox();
+            btnReset = new Button();
+            btnReport = new Button();
+            btnSave = new Button();
             plotCompression = new OxyPlot.WindowsForms.PlotView();
             nudSampleRate = new NumericUpDown();
             label2 = new Label();
@@ -48,7 +51,7 @@
             nudQuantLevels = new NumericUpDown();
             lblStatus = new Label();
             progressBar = new ProgressBar();
-            cancelBtn = new Button();
+            btnCancel = new Button();
             groupBox1 = new GroupBox();
             compressBox.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)nudSampleRate).BeginInit();
@@ -149,25 +152,25 @@
             audioDetailsLbl.Size = new Size(0, 20);
             audioDetailsLbl.TabIndex = 10;
             // 
-            // compressBtn
+            // btnCompress
             // 
-            compressBtn.Location = new Point(680, 26);
-            compressBtn.Name = "compressBtn";
-            compressBtn.Size = new Size(94, 29);
-            compressBtn.TabIndex = 11;
-            compressBtn.Text = "ضغط";
-            compressBtn.UseVisualStyleBackColor = true;
-            compressBtn.Click += btnCompress_Click;
+            btnCompress.Location = new Point(680, 26);
+            btnCompress.Name = "btnCompress";
+            btnCompress.Size = new Size(94, 29);
+            btnCompress.TabIndex = 11;
+            btnCompress.Text = "ضغط";
+            btnCompress.UseVisualStyleBackColor = true;
+            btnCompress.Click += btnCompress_Click;
             // 
-            // decompressBtn
+            // btnDecompress
             // 
-            decompressBtn.Location = new Point(18, 26);
-            decompressBtn.Name = "decompressBtn";
-            decompressBtn.Size = new Size(94, 29);
-            decompressBtn.TabIndex = 12;
-            decompressBtn.Text = "فك ضغط";
-            decompressBtn.UseVisualStyleBackColor = true;
-            decompressBtn.Click += btnDecompress_Click;
+            btnDecompress.Location = new Point(680, 67);
+            btnDecompress.Name = "btnDecompress";
+            btnDecompress.Size = new Size(94, 29);
+            btnDecompress.TabIndex = 12;
+            btnDecompress.Text = "فك ضغط";
+            btnDecompress.UseVisualStyleBackColor = true;
+            btnDecompress.Click += btnDecompress_Click;
             // 
             // cmbAlgorithm
             // 
@@ -180,6 +183,9 @@
             // 
             // compressBox
             // 
+            compressBox.Controls.Add(btnReset);
+            compressBox.Controls.Add(btnReport);
+            compressBox.Controls.Add(btnSave);
             compressBox.Controls.Add(plotCompression);
             compressBox.Controls.Add(nudSampleRate);
             compressBox.Controls.Add(label2);
@@ -187,16 +193,46 @@
             compressBox.Controls.Add(nudQuantLevels);
             compressBox.Controls.Add(lblStatus);
             compressBox.Controls.Add(progressBar);
-            compressBox.Controls.Add(cancelBtn);
+            compressBox.Controls.Add(btnCancel);
             compressBox.Controls.Add(cmbAlgorithm);
-            compressBox.Controls.Add(compressBtn);
-            compressBox.Controls.Add(decompressBtn);
+            compressBox.Controls.Add(btnCompress);
+            compressBox.Controls.Add(btnDecompress);
             compressBox.Location = new Point(44, 308);
             compressBox.Name = "compressBox";
             compressBox.Size = new Size(906, 395);
             compressBox.TabIndex = 14;
             compressBox.TabStop = false;
             compressBox.Text = "Compress Box";
+            // 
+            // btnReset
+            // 
+            btnReset.Location = new Point(792, 67);
+            btnReset.Name = "btnReset";
+            btnReset.Size = new Size(94, 29);
+            btnReset.TabIndex = 24;
+            btnReset.Text = "إعادة تعيين";
+            btnReset.UseVisualStyleBackColor = true;
+            btnReset.Click += btnReset_Click;
+            // 
+            // btnReport
+            // 
+            btnReport.Location = new Point(18, 71);
+            btnReport.Name = "btnReport";
+            btnReport.Size = new Size(94, 29);
+            btnReport.TabIndex = 23;
+            btnReport.Text = "تقرير";
+            btnReport.UseVisualStyleBackColor = true;
+            btnReport.Click += btnReport_Click;
+            // 
+            // btnSave
+            // 
+            btnSave.Location = new Point(18, 26);
+            btnSave.Name = "btnSave";
+            btnSave.Size = new Size(94, 29);
+            btnSave.TabIndex = 22;
+            btnSave.Text = "حفظ";
+            btnSave.UseVisualStyleBackColor = true;
+            btnSave.Click += btnSave_Click;
             // 
             // plotCompression
             // 
@@ -266,15 +302,15 @@
             progressBar.TabIndex = 15;
             progressBar.Visible = false;
             // 
-            // cancelBtn
+            // btnCancel
             // 
-            cancelBtn.Location = new Point(792, 26);
-            cancelBtn.Name = "cancelBtn";
-            cancelBtn.Size = new Size(94, 29);
-            cancelBtn.TabIndex = 14;
-            cancelBtn.Text = "إلغاء";
-            cancelBtn.UseVisualStyleBackColor = true;
-            cancelBtn.Click += btnCancel_Click;
+            btnCancel.Location = new Point(792, 26);
+            btnCancel.Name = "btnCancel";
+            btnCancel.Size = new Size(94, 29);
+            btnCancel.TabIndex = 14;
+            btnCancel.Text = "إلغاء";
+            btnCancel.UseVisualStyleBackColor = true;
+            btnCancel.Click += btnCancel_Click;
             // 
             // groupBox1
             // 
@@ -324,12 +360,12 @@
         private Button btnPause;
         private OxyPlot.WindowsForms.PlotView plotWaveform;
         private Label audioDetailsLbl;
-        private Button compressBtn;
-        private Button decompressBtn;
+        private Button btnCompress;
+        private Button btnDecompress;
         private ComboBox cmbAlgorithm;
         private GroupBox compressBox;
         private GroupBox groupBox1;
-        private Button cancelBtn;
+        private Button btnCancel;
         private ProgressBar progressBar;
         private Label lblStatus;
         private Label label2;
@@ -337,5 +373,8 @@
         private NumericUpDown nudQuantLevels;
         private NumericUpDown nudSampleRate;
         private OxyPlot.WindowsForms.PlotView plotCompression;
+        private Button btnSave;
+        private Button btnReport;
+        private Button btnReset;
     }
 }
